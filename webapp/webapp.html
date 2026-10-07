@@ -118,6 +118,22 @@ a#link {
 	color: inherit;
 	text-decoration: none;
 }
+td.whois pre {
+	white-space: pre-wrap;
+	font-size: 75%;
+	max-height: 20em;
+	overflow-y: auto;
+}
+td.whois dl {
+	margin: .5em 0;
+	font-size: 85%;
+}
+td.whois dt {
+	font-weight: 600;
+}
+td.whois dd {
+	margin: 0 0 .3em 0;
+}
 span#source {
 	position: fixed;
 	right: 1em;
@@ -165,6 +181,44 @@ window.onload = function() {
 }
 
 last_registered = 0;
+last_whois = 0;
+
+function whoisCell(whois) {
+	// built with .text() instead of HTML strings: WHOIS data comes from outside servers
+	const td = $('<td class="whois">');
+	if (!whois) {
+		return td.text('…');
+	}
+	const owner = whois['registrar'] || whois['registrant'] || '—';
+	td.append($('<div>').text(owner));
+	if (whois['creation_date']) {
+		td.append($('<sup>').text('created ' + whois['creation_date']));
+	}
+	const details = $('<details>');
+	details.append($('<summary>').text('details'));
+	const dl = $('<dl>');
+	const rows = {
+		'Registrar': whois['registrar'],
+		'Registrant': whois['registrant'],
+		'Created': whois['creation_date'],
+		'Updated': whois['updated_date'],
+		'Expires': whois['expiration_date'],
+		'Status': (whois['status'] || []).join(', '),
+		'Name servers': (whois['name_servers'] || []).join(', '),
+		'DNSSEC': whois['dnssec'],
+		'Abuse email': whois['abuse_email'],
+	};
+	$.each(rows, function(label, value) {
+		if (value) {
+			dl.append($('<dt>').text(label), $('<dd>').text(value));
+		}
+	});
+	details.append(dl);
+	if (whois['text']) {
+		details.append($('<pre>').text(whois['text']));
+	}
+	return td.append(details);
+}
 
 function shareResults() {
 	navigator.clipboard.writeText(window.location.href.split('#')[0] + '#' + sid);
@@ -173,12 +227,15 @@ function shareResults() {
 
 function fetchDomains() {
 	$.getJSON('/api/scans/' + $('#sid').val() + '/domains', function(data) {
+		// the table is rebuilt from scratch, so remember which WHOIS details were expanded
+		const open = $('#data details[open]').map(function() { return $(this).closest('tr').data('domain'); }).get();
 		$('#data').empty();
 		$('<tr>').html(
 				'<th>PERMUTATION</th>' +
 				'<th>IP ADDRESS</th>' +
 				'<th>NAME SERVER</th>' +
-				'<th>MAIL SERVER</th>'
+				'<th>MAIL SERVER</th>' +
+				'<th>WHOIS</th>'
 			).appendTo('#data');
 		$.each(data, function(i, item) {
 			$.each(item, function(k, v) {
@@ -197,12 +254,18 @@ function fetchDomains() {
 			dns_ns = (item['dns_ns'] || [''])[0];
 			dns_mx = (item['dns_mx'] || [''])[0];
 			geoip = item['geoip'] || '';
-			$('<tr>').html(
+			const row = $('<tr>').html(
 				'<td>' + permutation + ' <a href="http://' + permutation + '" id="link">🔗</a></br><sup>' + fuzzer + '</sup></td>' +
 				'<td>' + ipaddr + '</br><sup>' + geoip + '</sup></td>' +
 				'<td>' + dns_ns + '</td>' +
 				'<td>' + dns_mx + '</td>'
-			).appendTo('#data');
+			);
+			row.data('domain', permutation);
+			const cell = whoisCell(item['whois']);
+			if (open.includes(permutation)) {
+				cell.find('details').attr('open', '');
+			}
+			row.append(cell).appendTo('#data');
 		});
 	});
 }
@@ -213,13 +276,17 @@ function pollScan() {
         $('#progress').val(data['complete']/data['total']);
 		if (data['remaining'] > 0) {
 			setTimeout(pollScan, 250);
+		} else if (data['whois_running']) {
+			$('#status').html('WHOIS lookups: ' + data['whois_complete'] + ' of ' + data['whois_total']);
+			setTimeout(pollScan, 1000);
 		} else {
 			sid = $('#sid').val()
 			$('#status').html('Scanned <a href="/api/scans/' + sid + '/list">' + data['complete'] + '</a> permutations. Found ' + data['registered'] + ' registered: <a href="#" onclick="shareResults()">share it</a> or download as <a href="/api/scans/' + sid + '/csv">CSV</a> <a href="/api/scans/' + sid + '/json">JSON</a>');
 			$('#scan').text('Scan');
 		}
-		if (last_registered < data['registered']) {
+		if (last_registered < data['registered'] || last_whois < data['whois_complete']) {
 			last_registered = data['registered']
+			last_whois = data['whois_complete']
 			fetchDomains();
 		}
     })
@@ -236,6 +303,7 @@ function actionScan() {
 
 	if ($('#scan').text() == 'Scan') {
 		last_registered = 0;
+		last_whois = 0;
 		$('#scan').text('⏱');
 		$.post({
 			url: '/api/scans',
