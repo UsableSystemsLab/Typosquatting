@@ -210,6 +210,7 @@ class Whois():
 		'nl': 'whois.domain-registry.nl',
 		'br': 'whois.registro.br',
 		'jp': 'whois.jprs.jp',
+		'sa': 'whois.nic.net.sa',
 	}
 
 	def __init__(self):
@@ -230,6 +231,15 @@ class Whois():
 		fields = {
 			'registrar': (r'[\r\n]registrar[ .]*:\s+(?:name:\s)?(?P<registrar>[^\r\n]+)', str),
 			'creation_date': (r'[\r\n](?:created(?: on)?|creation date|registered(?: on)?)[ .]*:\s+(?P<creation_date>[^\r\n]+)', self._brute_datetime),
+			'updated_date': (r'[\r\n](?:updated date|last updated(?: on)?|last modified|changed)[ .]*:\s+(?P<updated_date>[^\r\n]+)', self._brute_datetime),
+			'expiration_date': (r'[\r\n](?:registry expiry date|registrar registration expiration date|expir(?:y|ation|es)(?: date)?(?: on)?|paid-till)[ .]*:\s+(?P<expiration_date>[^\r\n]+)', self._brute_datetime),
+			'registrant': (r'[\r\n]registrant(?: name| organization)?[ .]*:\s+(?P<registrant>[^\r\n]+)', str),
+			'abuse_email': (r'[\r\n]registrar abuse contact email[ .]*:\s+(?P<abuse_email>[^\r\n]+)', str),
+			'dnssec': (r'[\r\n]dnssec[ .]*:\s+(?P<dnssec>[^\r\n]+)', str),
+		}
+		list_fields = {
+			'name_servers': r'[\r\n](?:name server|nserver)[ .]*:\s+([^\r\n]+)',
+			'status': r'[\r\n](?:domain )?status[ .]*:\s+([^\r\n]+)',
 		}
 		result = {'text': response}
 		response_reduced = '\r\n'.join([x.strip() for x in response.splitlines() if not x.startswith('%')])
@@ -239,6 +249,10 @@ class Whois():
 				result[field] = func(match.group(1))
 			else:
 				result[field] = None
+		for field, pattern in list_fields.items():
+			values = re.findall(pattern, response_reduced, re.IGNORECASE | re.MULTILINE)
+			# "clientDeleteProhibited https://icann.org/..." -> "clientDeleteProhibited"
+			result[field] = [v.split()[0].lower() if field == 'name_servers' else v.split()[0] for v in values]
 		return result
 
 	def query(self, query, server=None):

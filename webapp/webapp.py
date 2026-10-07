@@ -56,6 +56,7 @@ def janitor(sessions):
 				s.stop()
 				continue
 			if (s.timestamp + SESSION_TTL) < time.time():
+				s.stop_whois()
 				sessions.remove(s)
 				continue
 
@@ -71,6 +72,10 @@ class Session():
 		self.fuzzer = dnstwist.Fuzzer(self.url.domain, dictionary=DICTIONARY, tld_dictionary=TLD_DICTIONARY)
 		self.fuzzer.generate()
 		self.permutations = self.fuzzer.permutations
+		self.whois_stop = threading.Event()
+		self.whois_total = 0
+		self.whois_complete = 0
+		self.whois_running = False
 
 	def scan(self):
 		for domain in self.fuzzer.domains:
@@ -83,6 +88,32 @@ class Session():
 				worker.nameservers = self.nameservers.split(',')
 			worker.start()
 			self.threads.append(worker)
+
+		self.whois_running = True
+		whois_thread = threading.Thread(target=self.whois_lookup, daemon=True)
+		whois_thread.start()
+
+	def whois_lookup(self):
+		# wait until the DNS scan is done (the janitor empties self.threads when it finishes)
+		while self.threads and not self.whois_stop.is_set():
+			time.sleep(1)
+		# self.fuzzer.domains holds the real objects; permutations() would only return copies
+		registered = [d for d in self.fuzzer.domains if d.is_registered()]
+		self.whois_total = len(registered)
+		whois = dnstwist.Whois()
+		for domain in registered:
+			if self.whois_stop.is_set():
+				break
+			try:
+				reply = whois.whois('.'.join(dnstwist.domain_tld(domain['domain'])[1:]))
+			except Exception:
+				reply = {}
+			domain['whois'] = {k: (v.strftime('%Y-%m-%d') if hasattr(v, 'strftime') else v) for k, v in reply.items()}
+			self.whois_complete += 1
+		self.whois_running = False
+
+	def stop_whois(self):
+		self.whois_stop.set()
 
 	def stop(self):
 		self.jobs.queue.clear()
@@ -108,11 +139,17 @@ class Session():
 			'total': total,
 			'complete': complete,
 			'remaining': remaining,
-			'registered': registered
+			'registered': registered,
+			'whois_total': self.whois_total,
+			'whois_complete': self.whois_complete,
+			'whois_running': self.whois_running
 			}
 
 	def csv(self):
-		return dnstwist.Format(self.permutations(registered=True)).csv()
+		domains = self.permutations(registered=True)
+		for domain in domains:
+			domain.pop('whois', None) # CSV export can't hold nested data; these are copies, so the UI keeps it
+		return dnstwist.Format(domains).csv()
 
 	def json(self):
 		return dnstwist.Format(self.permutations(registered=True)).json()
@@ -197,6 +234,7 @@ def api_stop(sid):
 	for s in sessions:
 		if s.id == sid:
 			s.stop()
+			s.stop_whois()
 			return jsonify({})
 	return jsonify({'message': 'Scan session not found'}), 404
 
